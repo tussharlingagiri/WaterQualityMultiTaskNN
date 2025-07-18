@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 import torch
@@ -11,7 +11,7 @@ import seaborn as sns
 
 # --- Model Definition ---
 class WaterQualityModel(nn.Module):
-    def __init__(self, input_size, hidden1=64, hidden2=32, dropout=0.3, num_classes=3):
+    def __init__(self, input_size, hidden1=128, hidden2=64, dropout=0.1, num_classes=3):
         super(WaterQualityModel, self).__init__()
         self.layer1 = nn.Linear(input_size, hidden1)
         self.layer2 = nn.Linear(hidden1, hidden2)
@@ -67,7 +67,6 @@ This app demonstrates a multi-task deep learning model for analyzing water quali
 Perfect for showcasing **environmental AI**, **multi-output neural networks**, and **interpretability** in water resource monitoring.
 """, unsafe_allow_html=True)
 
-
 # --- File Upload ---
 uploaded_file = st.file_uploader("📂 Upload your water quality CSV file", type="csv")
 
@@ -75,7 +74,6 @@ if uploaded_file:
     df = pd.read_csv(uploaded_file)
     df.columns = df.columns.str.strip()
 
-    # Optional remapping
     column_mapping = {"Water_Quality": "Water Quality Classification"}
     for new_col, actual_col in column_mapping.items():
         if actual_col in df.columns:
@@ -88,11 +86,12 @@ if uploaded_file:
         st.stop()
 
     X = df[features]
-    y_wqi = df['WQI'].values.reshape(-1, 1) / 100
+    y_wqi_raw = df['WQI'].values.reshape(-1, 1)
+    y_wqi = y_wqi_raw  # log transform
     y_quality = df['Water_Quality']
 
     scaler_x = StandardScaler()
-    scaler_y = StandardScaler()
+    scaler_y = MinMaxScaler()
     le_quality = LabelEncoder()
 
     X_scaled = scaler_x.fit_transform(X)
@@ -101,14 +100,15 @@ if uploaded_file:
     num_classes = len(le_quality.classes_)
 
     X_train, X_test, y_wqi_train, y_wqi_test, y_quality_train, y_quality_test = train_test_split(
-        X_scaled, y_wqi_scaled, y_quality_encoded, test_size=0.2, random_state=42
+        X_scaled, y_wqi_scaled, y_quality_encoded, test_size=0.2, stratify=y_quality_encoded, random_state=42
     )
 
     input_size = len(features)
     model = WaterQualityModel(input_size, num_classes=num_classes)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    class_weights = torch.tensor(np.bincount(y_quality_encoded, minlength=num_classes)**-0.5, dtype=torch.float32)
     criterion_wqi = nn.MSELoss()
-    criterion_quality = nn.CrossEntropyLoss()
+    criterion_quality = nn.CrossEntropyLoss(weight=class_weights)
 
     st.subheader("📝 Uploaded Data Preview")
     st.dataframe(df.head())
@@ -117,7 +117,7 @@ if uploaded_file:
     if st.button("🚀 Train Model"):
         with st.spinner("Training the model..."):
             model.train()
-            for epoch in range(100):
+            for epoch in range(300):
                 optimizer.zero_grad()
                 x_tensor = torch.FloatTensor(X_train)
                 y_wqi_tensor = torch.FloatTensor(y_wqi_train)
@@ -135,6 +135,8 @@ if uploaded_file:
             pred_wqi, pred_class_logits = model(X_test_tensor)
             wqi_pred = scaler_y.inverse_transform(pred_wqi.numpy()).flatten()
             actual_wqi = scaler_y.inverse_transform(y_wqi_test).flatten()
+            wqi_pred = np.clip(wqi_pred, 0, None)  # Prevent negatives
+
             predicted_classes = torch.argmax(pred_class_logits, dim=1).numpy()
             predicted_labels = le_quality.inverse_transform(predicted_classes)
             actual_labels = le_quality.inverse_transform(y_quality_test)
@@ -181,7 +183,7 @@ if uploaded_file:
         st.subheader("📋 Classification Report")
         st.text(classification_report(actual_labels, predicted_labels))
 
-        st.subheader("🧮 Confusion Matrix")
+        st.subheader("👮 Confusion Matrix")
         fig_cm, ax_cm = plt.subplots()
         cm = confusion_matrix(actual_labels, predicted_labels, labels=le_quality.classes_)
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
