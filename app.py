@@ -128,38 +128,73 @@ if uploaded_file is not None:
         st.success("✅ Model training complete!")
 
     # Prediction
-    if st.button("🔮 Predict on Test Set"):
-        model.eval()
-        X_test_tensor = torch.FloatTensor(X_test)
-        with torch.no_grad():
-            wqi_pred, quality_pred = model(X_test_tensor)
-            wqi_pred = scaler_y.inverse_transform(wqi_pred.numpy()).flatten()
-            actual_wqi = scaler_y.inverse_transform(y_wqi_test).flatten()
-            predicted_classes = torch.argmax(quality_pred, dim=1).numpy()
-            predicted_labels = le_quality.inverse_transform(predicted_classes)
-            actual_labels = le_quality.inverse_transform(y_quality_test)
+    from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
 
-        result_df = pd.DataFrame({
-            "Actual Classification": actual_labels,
-            "Predicted Classification": predicted_labels
-        })
+if st.button("🔮 Predict on Test Set"):
+    model.eval()
+    X_test_tensor = torch.FloatTensor(X_test)
+    with torch.no_grad():
+        wqi_pred, quality_pred = model(X_test_tensor)
+        wqi_pred = scaler_y.inverse_transform(wqi_pred.numpy()).flatten()
+        actual_wqi = scaler_y.inverse_transform(y_wqi_test).flatten()
+        predicted_classes = torch.argmax(quality_pred, dim=1).numpy()
+        predicted_labels = le_quality.inverse_transform(predicted_classes)
+        actual_labels = le_quality.inverse_transform(y_quality_test)
+        probs = torch.softmax(quality_pred, dim=1).numpy()
+        confidence_scores = np.max(probs, axis=1)
 
-        col3, col4 = st.columns(2)
+    result_df = pd.DataFrame(X_test, columns=features)
+    result_df["Actual WQI"] = actual_wqi
+    result_df["Predicted WQI"] = wqi_pred
+    result_df["Actual Classification"] = actual_labels
+    result_df["Predicted Classification"] = predicted_labels
+    result_df["Confidence"] = confidence_scores
+    prob_df = pd.DataFrame(probs, columns=[f"Prob_{cls}" for cls in le_quality.classes_])
+    result_df = pd.concat([result_df, prob_df], axis=1)
 
-        with col3:
-            st.subheader("📈 WQI Prediction Plot")
-            fig, ax = plt.subplots()
-            ax.scatter(actual_wqi, wqi_pred, color='blue', alpha=0.5)
-            ax.plot([0, max(actual_wqi)], [0, max(actual_wqi)], 'r--', label='Perfect Prediction')
-            ax.set_xlabel("Actual WQI")
-            ax.set_ylabel("Predicted WQI")
-            ax.set_title("Predicted vs Actual WQI")
-            ax.legend()
-            st.pyplot(fig)
+    with st.expander("🧪 Filter Predictions"):
+        show_only_wrong = st.checkbox("Show only misclassified rows")
+        min_conf = st.slider("Minimum confidence", 0.0, 1.0, 0.0, step=0.01)
 
-        with col4:
-            st.subheader("🧪 Sample Predictions")
-            st.dataframe(result_df.head(20))
+        filtered_df = result_df.copy()
+        if show_only_wrong:
+            filtered_df = filtered_df[filtered_df["Actual Classification"] != filtered_df["Predicted Classification"]]
+        filtered_df = filtered_df[filtered_df["Confidence"] >= min_conf]
 
-            csv = result_df.to_csv(index=False).encode()
-            st.download_button("⬇️ Download Predictions CSV", csv, "predictions.csv", "text/csv")
+    def highlight_mismatches(row):
+        return ['background-color: #ffdddd' if row['Actual Classification'] != row['Predicted Classification'] else '' for _ in row]
+
+    col3, col4 = st.columns(2)
+
+    with col3:
+        st.subheader("📈 WQI Prediction Plot")
+        fig, ax = plt.subplots()
+        ax.scatter(actual_wqi, wqi_pred, color='blue', alpha=0.5)
+        ax.plot([0, max(actual_wqi)], [0, max(actual_wqi)], 'r--', label='Perfect Prediction')
+        ax.set_xlabel("Actual WQI")
+        ax.set_ylabel("Predicted WQI")
+        ax.set_title("Predicted vs Actual WQI")
+        ax.legend()
+        st.pyplot(fig)
+
+    with col4:
+        st.subheader("🧪 Predictions Table")
+        st.dataframe(filtered_df.head(20).style.apply(highlight_mismatches, axis=1))
+
+        csv = filtered_df.to_csv(index=False).encode()
+        st.download_button("⬇️ Download Filtered Predictions", csv, "predictions.csv", "text/csv")
+
+    st.subheader("📋 Classification Report")
+    st.text(classification_report(actual_labels, predicted_labels))
+
+    st.subheader("🧮 Confusion Matrix")
+    fig_cm, ax_cm = plt.subplots()
+    cm = confusion_matrix(actual_labels, predicted_labels, labels=le_quality.classes_)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=le_quality.classes_,
+                yticklabels=le_quality.classes_,
+                ax=ax_cm)
+    ax_cm.set_xlabel("Predicted")
+    ax_cm.set_ylabel("Actual")
+    st.pyplot(fig_cm)
