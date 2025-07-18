@@ -3,9 +3,11 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 # --- Model Definition ---
 class WaterQualityModel(nn.Module):
@@ -25,7 +27,7 @@ class WaterQualityModel(nn.Module):
         quality = self.output_quality(x)
         return wqi, quality
 
-# --- Streamlit App ---
+# --- Streamlit UI ---
 st.set_page_config(page_title="Water Quality Prediction App", layout="wide")
 st.markdown("""
 <div style='display:flex; align-items:center; justify-content:space-between;'>
@@ -34,47 +36,55 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# --- About Section ---
 st.sidebar.markdown("""
 ### ℹ️ About this App
-This app uses a custom-built, AI-powered multi-task deep learning model implemented using PyTorch. It simultaneously performs supervised regression and multi-class classification on water quality data derived from chemical test results.
+This app demonstrates a multi-task deep learning model for analyzing water quality using chemical test data.
 
-The model consists of:
-- Input layer with 7 chemical features
-- Two fully connected hidden layers with ReLU activation
-- Dropout (p=0.3) between layers for regularization
-- Output 1: Single linear neuron for WQI prediction (regression)
-- Output 2: Fully connected layer with softmax activation for classification
+🧠 **Model Overview**
+- Built using **PyTorch** with two hidden layers, ReLU activations, and dropout regularization.
+- Implements **multi-task learning** to:
+  - 🔹 Perform **regression** on Water Quality Index (WQI)
+  - 🔹 Perform **multi-class classification** on categorical water quality (e.g., Good, Poor)
 
-Training configuration:
-- Optimizer: Adam with learning rate = 0.001
-- Loss functions: MSE for WQI and CrossEntropyLoss for class
-- Epochs: 100 (batched on full training set)
-
----
-
-- Predicts Water Quality Index (WQI) — a continuous score learned through supervised regression using mean squared error (MSE) loss on scaled targets
-- Classifies water into ordinal categories using softmax-activated logits and cross-entropy loss, mapping chemical properties to categorical safety labels `Excellent`, `Good`, `Poor`, `Unsuitable for Drinking`, etc.
-- The model architecture is implemented in PyTorch using two hidden layers with ReLU activations and dropout regularization. Scikit-learn is used for preprocessing (StandardScaler, LabelEncoder, train-test split).
+⚙️ **Training Pipeline**
 - Features: `pH`, `EC`, `TDS`, `Ca`, `Mg`, `Na`, `Cl`
-""")
+- Preprocessing:
+  - `StandardScaler` to normalize numeric features
+  - `LabelEncoder` to encode classification targets
+- Train/Test split: 80/20 with stratified labels
+
+📉 **Loss Strategy**
+- Regression Head → `MSELoss` for predicting scaled WQI
+- Classification Head → `CrossEntropyLoss` for categorical output
+- Joint optimization using a single backprop pass
+
+📦 **Outputs**
+- 🧪 Water Quality Index prediction (real-valued)
+- 🏷 Water Quality Category prediction (multi-class)
+- 📊 Confidence scores & class probabilities
+- 📈 Interactive WQI plot + confusion matrix + classification report
+
+Perfect for showcasing **environmental AI**, **multi-output neural networks**, and **interpretability** in water resource monitoring.
+""", unsafe_allow_html=True)
+
 
 # --- File Upload ---
 uploaded_file = st.file_uploader("📂 Upload your water quality CSV file", type="csv")
-if uploaded_file is not None:
+
+if uploaded_file:
     df = pd.read_csv(uploaded_file)
     df.columns = df.columns.str.strip()
 
+    # Optional remapping
     column_mapping = {"Water_Quality": "Water Quality Classification"}
     for new_col, actual_col in column_mapping.items():
         if actual_col in df.columns:
             df[new_col] = df[actual_col]
 
     features = ['pH', 'EC', 'TDS', 'Ca', 'Mg', 'Na', 'Cl']
-    required_columns = ['WQI', 'Water_Quality'] + features
-    missing = [col for col in required_columns if col not in df.columns]
-    if missing:
-        st.error(f"❌ Missing required columns: {missing}")
+    required = ['WQI', 'Water_Quality'] + features
+    if any(col not in df.columns for col in required):
+        st.error(f"Missing required columns: {set(required) - set(df.columns)}")
         st.stop()
 
     X = df[features]
@@ -88,16 +98,11 @@ if uploaded_file is not None:
     X_scaled = scaler_x.fit_transform(X)
     y_wqi_scaled = scaler_y.fit_transform(y_wqi)
     y_quality_encoded = le_quality.fit_transform(y_quality)
-
     num_classes = len(le_quality.classes_)
 
     X_train, X_test, y_wqi_train, y_wqi_test, y_quality_train, y_quality_test = train_test_split(
         X_scaled, y_wqi_scaled, y_quality_encoded, test_size=0.2, random_state=42
     )
-
-    X_train_tensor = torch.FloatTensor(X_train)
-    y_wqi_train_tensor = torch.FloatTensor(y_wqi_train)
-    y_quality_train_tensor = torch.LongTensor(y_quality_train)
 
     input_size = len(features)
     model = WaterQualityModel(input_size, num_classes=num_classes)
@@ -105,96 +110,84 @@ if uploaded_file is not None:
     criterion_wqi = nn.MSELoss()
     criterion_quality = nn.CrossEntropyLoss()
 
-    col1, col2 = st.columns(2)
+    st.subheader("📝 Uploaded Data Preview")
+    st.dataframe(df.head())
+    st.write("🏷 Detected classes:", list(le_quality.classes_))
 
-    with col1:
-        st.subheader("📝 Uploaded Data Preview")
-        st.dataframe(df.head())
-        st.write("📊 Columns detected:", df.columns.tolist())
-        st.write("🏷 Detected classes:", list(le_quality.classes_))
-
-    with col2:
-        st.subheader("🔁 Model Training")
+    if st.button("🚀 Train Model"):
         with st.spinner("Training the model..."):
+            model.train()
             for epoch in range(100):
-                model.train()
                 optimizer.zero_grad()
-                wqi_out, quality_out = model(X_train_tensor)
-                loss_wqi = criterion_wqi(wqi_out, y_wqi_train_tensor)
-                loss_quality = criterion_quality(quality_out, y_quality_train_tensor)
-                total_loss = loss_wqi + loss_quality
-                total_loss.backward()
+                x_tensor = torch.FloatTensor(X_train)
+                y_wqi_tensor = torch.FloatTensor(y_wqi_train)
+                y_class_tensor = torch.LongTensor(y_quality_train)
+                out_wqi, out_class = model(x_tensor)
+                loss = criterion_wqi(out_wqi, y_wqi_tensor) + criterion_quality(out_class, y_class_tensor)
+                loss.backward()
                 optimizer.step()
-        st.success("✅ Model training complete!")
+        st.success("✅ Training complete!")
 
-    # Prediction
-    from sklearn.metrics import classification_report, confusion_matrix
-import seaborn as sns
+    if st.button("🔮 Predict on Test Set"):
+        model.eval()
+        X_test_tensor = torch.FloatTensor(X_test)
+        with torch.no_grad():
+            pred_wqi, pred_class_logits = model(X_test_tensor)
+            wqi_pred = scaler_y.inverse_transform(pred_wqi.numpy()).flatten()
+            actual_wqi = scaler_y.inverse_transform(y_wqi_test).flatten()
+            predicted_classes = torch.argmax(pred_class_logits, dim=1).numpy()
+            predicted_labels = le_quality.inverse_transform(predicted_classes)
+            actual_labels = le_quality.inverse_transform(y_quality_test)
+            probs = torch.softmax(pred_class_logits, dim=1).numpy()
+            confidence_scores = np.max(probs, axis=1)
 
-if st.button("🔮 Predict on Test Set"):
-    model.eval()
-    X_test_tensor = torch.FloatTensor(X_test)
-    with torch.no_grad():
-        wqi_pred, quality_pred = model(X_test_tensor)
-        wqi_pred = scaler_y.inverse_transform(wqi_pred.numpy()).flatten()
-        actual_wqi = scaler_y.inverse_transform(y_wqi_test).flatten()
-        predicted_classes = torch.argmax(quality_pred, dim=1).numpy()
-        predicted_labels = le_quality.inverse_transform(predicted_classes)
-        actual_labels = le_quality.inverse_transform(y_quality_test)
-        probs = torch.softmax(quality_pred, dim=1).numpy()
-        confidence_scores = np.max(probs, axis=1)
+        result_df = pd.DataFrame(X_test, columns=features)
+        result_df["Actual WQI"] = actual_wqi
+        result_df["Predicted WQI"] = wqi_pred
+        result_df["Actual Classification"] = actual_labels
+        result_df["Predicted Classification"] = predicted_labels
+        result_df["Confidence"] = confidence_scores
+        prob_df = pd.DataFrame(probs, columns=[f"Prob_{cls}" for cls in le_quality.classes_])
+        result_df = pd.concat([result_df, prob_df], axis=1)
 
-    result_df = pd.DataFrame(X_test, columns=features)
-    result_df["Actual WQI"] = actual_wqi
-    result_df["Predicted WQI"] = wqi_pred
-    result_df["Actual Classification"] = actual_labels
-    result_df["Predicted Classification"] = predicted_labels
-    result_df["Confidence"] = confidence_scores
-    prob_df = pd.DataFrame(probs, columns=[f"Prob_{cls}" for cls in le_quality.classes_])
-    result_df = pd.concat([result_df, prob_df], axis=1)
+        with st.expander("🔍 Filter Predictions"):
+            show_wrong = st.checkbox("Show only misclassifications")
+            min_conf = st.slider("Minimum confidence", 0.0, 1.0, 0.0, 0.01)
+            filtered_df = result_df.copy()
+            if show_wrong:
+                filtered_df = filtered_df[filtered_df["Actual Classification"] != filtered_df["Predicted Classification"]]
+            filtered_df = filtered_df[filtered_df["Confidence"] >= min_conf]
 
-    with st.expander("🧪 Filter Predictions"):
-        show_only_wrong = st.checkbox("Show only misclassified rows")
-        min_conf = st.slider("Minimum confidence", 0.0, 1.0, 0.0, step=0.01)
+        def highlight(row):
+            return ['background-color: #ffdddd' if row['Actual Classification'] != row['Predicted Classification'] else '' for _ in row]
 
-        filtered_df = result_df.copy()
-        if show_only_wrong:
-            filtered_df = filtered_df[filtered_df["Actual Classification"] != filtered_df["Predicted Classification"]]
-        filtered_df = filtered_df[filtered_df["Confidence"] >= min_conf]
+        col1, col2 = st.columns(2)
 
-    def highlight_mismatches(row):
-        return ['background-color: #ffdddd' if row['Actual Classification'] != row['Predicted Classification'] else '' for _ in row]
+        with col1:
+            st.subheader("📈 WQI Prediction Plot")
+            fig, ax = plt.subplots()
+            ax.scatter(actual_wqi, wqi_pred, color='blue', alpha=0.5)
+            ax.plot([0, max(actual_wqi)], [0, max(actual_wqi)], 'r--')
+            ax.set_xlabel("Actual WQI")
+            ax.set_ylabel("Predicted WQI")
+            ax.set_title("Predicted vs Actual WQI")
+            st.pyplot(fig)
 
-    col3, col4 = st.columns(2)
+        with col2:
+            st.subheader("🧪 Predictions Table")
+            st.dataframe(filtered_df.head(20).style.apply(highlight, axis=1))
+            st.download_button("⬇️ Download Results", filtered_df.to_csv(index=False), "predictions.csv", "text/csv")
 
-    with col3:
-        st.subheader("📈 WQI Prediction Plot")
-        fig, ax = plt.subplots()
-        ax.scatter(actual_wqi, wqi_pred, color='blue', alpha=0.5)
-        ax.plot([0, max(actual_wqi)], [0, max(actual_wqi)], 'r--', label='Perfect Prediction')
-        ax.set_xlabel("Actual WQI")
-        ax.set_ylabel("Predicted WQI")
-        ax.set_title("Predicted vs Actual WQI")
-        ax.legend()
-        st.pyplot(fig)
+        st.subheader("📋 Classification Report")
+        st.text(classification_report(actual_labels, predicted_labels))
 
-    with col4:
-        st.subheader("🧪 Predictions Table")
-        st.dataframe(filtered_df.head(20).style.apply(highlight_mismatches, axis=1))
-
-        csv = filtered_df.to_csv(index=False).encode()
-        st.download_button("⬇️ Download Filtered Predictions", csv, "predictions.csv", "text/csv")
-
-    st.subheader("📋 Classification Report")
-    st.text(classification_report(actual_labels, predicted_labels))
-
-    st.subheader("🧮 Confusion Matrix")
-    fig_cm, ax_cm = plt.subplots()
-    cm = confusion_matrix(actual_labels, predicted_labels, labels=le_quality.classes_)
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=le_quality.classes_,
-                yticklabels=le_quality.classes_,
-                ax=ax_cm)
-    ax_cm.set_xlabel("Predicted")
-    ax_cm.set_ylabel("Actual")
-    st.pyplot(fig_cm)
+        st.subheader("🧮 Confusion Matrix")
+        fig_cm, ax_cm = plt.subplots()
+        cm = confusion_matrix(actual_labels, predicted_labels, labels=le_quality.classes_)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=le_quality.classes_,
+                    yticklabels=le_quality.classes_,
+                    ax=ax_cm)
+        ax_cm.set_xlabel("Predicted")
+        ax_cm.set_ylabel("Actual")
+        st.pyplot(fig_cm)
