@@ -105,9 +105,8 @@ This project is licensed under the [MIT License](LICENSE).
 ## 👤 Author
 
 **Tusshar Lingagiri**
-🧑‍🎓 2nd-Year Software Engineering @ University of Glasgow
+🧑‍🎓 3rd-Year Software Engineering @ University of Glasgow
 🔗 [LinkedIn](https://www.linkedin.com/in/tussharlingagiri) • [GitHub](https://github.com/tussharlion)
 
----
 
-Would you like this pushed to GitHub with the updated file too?
+
